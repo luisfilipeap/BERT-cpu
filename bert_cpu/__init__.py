@@ -2,7 +2,7 @@
 
 """
 
-from bert_cpu.engine import Tensor, ones, randn, set_seed, zeros
+from bert_cpu.engine import Tensor, cat, ones, randn, set_seed, zeros
 from bert_cpu.nn import (
     Dropout,
     Embedding,
@@ -31,6 +31,7 @@ __all__ = [
     "zeros",
     "ones",
     "randn",
+    "cat",
     "Module",
     "Parameter",
     "Linear",

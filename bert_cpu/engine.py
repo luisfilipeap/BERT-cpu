@@ -136,11 +136,11 @@ def _expand_reduced(grad: np.ndarray, axis: Axis, keepdims: bool, target_shape: 
 
     """Expand a reduction's upstream gradient back to the input shape.
 
-    Consider the gradient of ``(wᵀ @ x).sum()``. Let ``z = wᵀ @ x`` be an array
+    Consider the gradient of ``(w.T @ x).sum()``. Let ``z = w.T @ x`` be an array
     with shape ``(2, 3)`` (e.g. ``w`` is ``(2, 2)`` and ``x`` is ``(2, 3)``), and
     let ``out = z.sum()`` be a scalar:
 
-        z = wᵀ @ x = [ z00  z01  z02 ]    out = z.sum()
+        z = w.T @ x = [ z00  z01  z02 ]    out = z.sum()
                      [ z10  z11  z12 ]
 
         out = z00 + z01 + z02 + z10 + z11 + z12 
@@ -227,7 +227,7 @@ class Tensor:
 
     Consider the expression:
 
-        out = (wᵀ @ x).sum()
+        out = (w.T @ x).sum()
 
     where ``@`` is **matrix multiplication** — the linear-algebra row-by-column
     product, *not* the elementwise ``*`` — and ``wᵀ`` is the transpose of ``w``.
@@ -237,9 +237,10 @@ class Tensor:
     shape ``(2, 3)``, ``z = wᵀ @ x`` has shape ``(2, 3)``. The engine constructs
     the following computational graph:
 
-        w ----\
-               (@) ---> z ---> sum ---> out
-        x ----/        (2, 3)           scalar
+        ● out          (sum -> scalar)
+        └─ ● z          (@ -> shape (2, 3))
+           ├─ ● w
+           └─ ● x
 
     Here, ``z = wᵀ @ x`` is an intermediate ``Tensor`` whose parent nodes are
     ``w`` and ``x``. The scalar ``out`` is another ``Tensor``, created by
@@ -252,16 +253,21 @@ class Tensor:
 
     It then traverses the graph in reverse topological order. The ``sum`` node
     uses ``_expand_reduced`` to restore the reduced dimensions and broadcast its
-    upstream gradient back to ``z.shape``. The matrix-multiplication node then
-    applies the chain rule for a matrix product:
+    upstream gradient back to ``z.shape``. The matmul node then applies the
+    chain rule: each input's gradient is the upstream gradient ``d out / d z``
+    times that input's local slope of ``z``:
+
+        d out / d x = (d out / d z) · (d z / d x),   with   d z / d x = w
+        d out / d w = (d out / d z) · (d z / d w),   with   d z / d w = x
+
+    Written so the matrix shapes line up, those products are:
 
         d out / d x = w @ (d out / d z)
-        d out / d w = x @ (d out / d z)ᵀ
+        d out / d w = x @ (d out / d z).T
 
-    See ``Tensor.__matmul__`` for the local derivative rules used to compute
-    ``d z / d x`` and ``d z / d w`` when ``z = wᵀ @ x``. See ``Tensor.sum`` for
-    the derivative rule used to compute ``d out / d z`` when
-    ``out = z.sum()``.
+    The backward (derivative) rule for each operation lives in its own method:
+    see ``Tensor.__matmul__`` for the matrix multiplication and ``Tensor.sum``
+    for the sum.
 
     The resulting gradients are accumulated in ``x.grad`` and ``w.grad``.
     Gradient accumulation is necessary because the same tensor may contribute
@@ -271,13 +277,46 @@ class Tensor:
     ----------
     data : np.ndarray
         Numerical value computed. For example, the ``data`` stored by ``z`` in
-        ``z = wᵀ @ x`` is the matrix product of ``w.data.T`` and ``x.data``.
+        ``z = w.T @ x`` is the matrix product of ``w.data.T`` and ``x.data``.
 
     grad : np.ndarray
-        Gradient of the final scalar output with respect to ``data``. It has
-        the same shape as ``data`` and is initialized to zeros. Gradients are
-        accumulated rather than overwritten because a tensor may influence the
-        output through multiple computational paths.
+        Gradient of the final scalar output, ``out``, with respect to this
+        tensor's ``data``. It has the same shape as ``data`` and is initialized
+        to zeros.
+
+        Gradient contributions are accumulated with addition rather than
+        overwritten because the same tensor may influence ``out`` through
+        multiple paths in the computational graph. For example, consider:
+
+            out = x**2 + 3 * x
+
+        The tensor ``x`` contributes to ``out`` through two paths. Drawing the
+        graph the way the ``learn`` walkthroughs do (output on top, operands
+        hanging below), ``x`` is reached twice — once under each path:
+
+            ● out          (the + node)
+            ├─ ● x²         (the **2 node)
+            │  └─ ● x
+            └─ ● 3·x        (the * node)
+               └─ ● x       ⤴ (the same x as above)
+
+        By the sum rule, the total derivative with respect to ``x`` is the sum
+        of the derivative contributions from both paths:
+
+            d out / d x = d(x**2) / d x + d(3x) / d x
+                        = 2x + 3
+
+        During the backward pass, each path therefore adds its contribution to
+        ``x.grad``:
+
+            x.grad += 2 * x.data
+            x.grad += 3
+
+        If gradients were overwritten instead of accumulated, the contribution
+        from one path would replace the contribution from the other. Accumulation
+        ensures that ``x.grad`` stores the complete derivative obtained from all
+        paths connecting ``x`` to ``out``.
+
 
     requires_grad : bool
         Whether this tensor should accumulate gradients. When ``False``, the
@@ -285,13 +324,43 @@ class Tensor:
 
     _backward : Callable[[], None]
         Closure containing the local derivative rule for the operation that
-        created this tensor. It uses ``self.grad`` as the upstream gradient and
-        accumulates the corresponding gradients into the parent tensors.
+        created this tensor.
 
-        For ``z = wᵀ @ x``, the closure conceptually performs:
+        The gradient stored in this tensor is the upstream gradient received from
+        the next operation in the computational graph. In other words, if this
+        tensor is ``z``, then ``self.grad`` represents:
+
+            d out / d z
+
+        where ``out`` is the final scalar output. The closure combines this
+        upstream gradient with the local derivatives of the operation that created
+        ``z`` and accumulates the resulting contributions into the parent tensors.
+
+        For example, consider:
+
+            z = w.T @ x
+
+        In the closure stored in ``z._backward``, ``self`` refers to ``z``.
+        Therefore:
+
+            self.grad == z.grad == d out / d z
+
+        Applying the chain rule gives:
+
+            d out / d x = (d z / d x) @ (d out / d z)
+            d out / d w = (d z / d w) @ (d out / d z)
+
+        For compatible vector and matrix shapes, the closure conceptually performs:
 
             x.grad += w.data @ z.grad
-            w.grad += x.data @ z.grad.T
+            w.grad += np.outer(x.data, z.grad)
+
+        Thus, ``z.grad`` controls how strongly the local derivatives of the
+        matrix-multiplication operation contribute to the gradients of ``x`` and
+        ``w``. These contributions are accumulated because the same parent tensor
+        may influence the final output through multiple paths.
+
+
 
     _prev : set[Tensor]
         Parent tensors used to create this tensor. For ``z = wᵀ @ x``,
@@ -773,3 +842,61 @@ def ones(*shape: int, requires_grad: bool = True, dtype: Optional[np.dtype] = No
 def randn(*shape: int, requires_grad: bool = True, dtype: Optional[np.dtype] = None) -> Tensor:
     """Create a tensor of standard-normal samples (``dtype`` defaults to ``default_dtype``)."""
     return Tensor(np.random.randn(*shape).astype(dtype or default_dtype), requires_grad=requires_grad)
+
+
+# ---------------------------------------------------------------------- #
+# Joining ops
+# ---------------------------------------------------------------------- #
+def cat(tensors: Iterable["Tensor"], axis: int = 0) -> Tensor:
+    """Concatenate tensors along ``axis`` into a single node.
+
+    The forward value is just ``np.concatenate``; the interesting part is the
+    backward rule. Concatenation does not mix or scale any element — it only
+    *places* each input's values into a contiguous slice of the output. So for
+    ``out = cat([A, B], axis=0)`` the upstream gradient ``out.grad`` is simply
+    **cut back into the same slices** and handed to each input unchanged:
+
+        A ── row block 0 ──┐
+                           ├──> out      grad(A) = out.grad[rows of A]
+        B ── row block 1 ──┘             grad(B) = out.grad[rows of B]
+
+    There is no local derivative to multiply by (it is the identity on each
+    slice), which is why this is used for the "bias trick": prepending a constant
+    row ``x_0 = 1`` to an input lets the gradient w.r.t. the real features flow
+    straight back through the corresponding slice, while the constant row (a
+    ``requires_grad=False`` tensor) is ignored.
+
+    Parameters
+    ----------
+    tensors : iterable of Tensor
+        The tensors to join. All must share the same shape except along ``axis``.
+    axis : int
+        The axis along which to concatenate.
+
+    Returns
+    -------
+    Tensor
+        The concatenated tensor, wired so each input receives its own slice of
+        the upstream gradient.
+    """
+    tensors = [Tensor._as_tensor(t) for t in tensors]
+    out = Tensor(
+        np.concatenate([t.data for t in tensors], axis=axis),
+        tuple(tensors),
+        "cat",
+        any(t.requires_grad for t in tensors),
+    )
+
+    # Sizes along the concat axis -> the split points in the output gradient.
+    sizes = [t.shape[axis] for t in tensors]
+    split_points = np.cumsum(sizes)[:-1]
+
+    def _backward() -> None:
+        # Slice out.grad back into the per-input blocks and route each one home.
+        grads = np.split(out.grad, split_points, axis=axis)
+        for t, g in zip(tensors, grads):
+            if t.requires_grad:
+                t.grad += g
+
+    out._backward = _backward
+    return out
