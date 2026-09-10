@@ -188,6 +188,11 @@ and the cross-layer chain rule):
 pytest
 ```
 
+**Step 4 — write some of it yourself.** The graded exercises in `exercises/` are
+Jupyter notebooks: you implement an op's backward rule, then whole layers, and each
+notebook checks your gradients against finite differences — see
+[Exercises (Jupyter notebooks)](#exercises-jupyter-notebooks).
+
 From here you are ready to explore the higher-level modules. The full testing
 reference is in [Tests and didactic walkthroughs](#tests-and-didactic-walkthroughs).
 
@@ -233,6 +238,77 @@ print(layer.weight.grad)               # dL/dW (bias row included)
 > The higher-level pieces (`BERTModel`, `MultiHeadAttention`, optimizers, losses,
 > tokenizer) are scaffolded but not implemented yet — see
 > [Current status](#current-status) above.
+
+## Exercises (Jupyter notebooks)
+
+The `exercises/` folder is where you stop reading and start writing. The four graded
+exercises are **Jupyter notebooks**: the theory is rendered next to the code, you fill in
+the blanks, and the cell below grades what you wrote by comparing the engine's gradients
+with finite differences.
+
+### Install the notebook dependencies
+
+Jupyter is *not* a dependency of the library (`requirements.txt` stays NumPy-only) — it is
+only how the exercises are delivered. With the virtual environment activated:
+
+```bash
+pip install jupyterlab matplotlib
+```
+
+`matplotlib` is optional: it is used by a single plotting cell in Exercise 01, which says
+so and skips itself if the package is missing.
+
+### Launch
+
+Start Jupyter **from the project root** and open the first notebook:
+
+```bash
+jupyter lab                  # or: jupyter notebook
+```
+
+Then open `exercises/q01_activations.ipynb`. Opening the `.ipynb` files directly in VS Code
+(or any other notebook editor) works just as well — the first cell of every notebook puts
+the project root on `sys.path`, so `import bert_cpu` resolves whether the kernel starts in
+the project root or inside `exercises/`.
+
+### The four exercises, in order
+
+| # | Notebook | What you build |
+|---|---|---|
+| 01 | `q01_activations.ipynb` | `sigmoid`, `swish`, `softplus` as **new engine ops** — forward *and* the hand-written `_backward` |
+| 02 | `q02_rewrite_the_stars.ipynb` | The **star operation** (`act(u) * v`) as `nn.Module` layers — composed ops, so autograd writes the backward for you |
+| 03 | `q03_gated_linear_units.ipynb` | The **GLU family** (GLU, GTU, bilinear, GEGLU, SwiGLU) |
+| 04 | `q04_learnable_activations.ipynb` | A **learned mix** of ReLU/GELU/SiLU, with trainable coefficients |
+
+Work through them in that order — they build on each other. Exercise 03 asks you to bring
+the `swish` you wrote in Exercise 01 over into one cell, so a passing SwiGLU check
+validates both notebooks at once.
+
+### How a notebook works
+
+1. Run the **setup** cell at the top (imports and the `sys.path` bootstrap).
+2. Fill in each cell marked `# TODO:` — remove its `raise NotImplementedError` and write
+   the forward pass. Everything under a **GIVEN** heading is the harness; leave it alone.
+3. Run the **grading** cell. It prints, per tensor,
+   `max|analytic - numeric|` — the difference between the gradient `backward()` produced
+   and the same gradient recomputed by central finite differences. Anything around `1e-9`
+   is a PASS; a large number means the forward (or, in Exercise 01, the derivative) is
+   wrong. Unfinished pieces are reported as `SKIPPED`, so a half-finished notebook still
+   grades the parts you did.
+
+The checker itself lives in [`exercises/grading.py`](exercises/grading.py) — plain,
+readable code that knows nothing about the engine internals, which is exactly why its
+agreement is evidence.
+
+### The capstones stay scripts
+
+Two files in the same folder are **not** fill-in exercises but complete, runnable training
+baselines — read them, then run them from the project root:
+
+```bash
+python -m exercises.task_binary_classification   # UCI Adult: Linear + Adam + cross-entropy
+python -m exercises.task_learn_embedding         # word2vec (skip-gram + negative sampling)
+```
 
 ## Tests and didactic walkthroughs
 
