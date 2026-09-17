@@ -66,7 +66,7 @@ default_dtype: np.dtype = np.float64
 # --------------------------------------------------------------------------- #
 # A single global tally of the floating-point operations the engine executes, so
 # a training loop can report the compute it actually performs (see
-# ``exercises/q05_binary_classification.py``). It is instrumented in two places:
+# ``exercises/q05_binary_classification.ipynb``). It is instrumented in two places:
 # the *forward* cost of every op is added in ``Tensor.__init__`` (derived from the
 # op label and the output size), and the *matmul backward* — the dominant cost of
 # the backward pass — is added inside ``__matmul__``. Conventions: a matmul counts
