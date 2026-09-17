@@ -72,25 +72,6 @@ The same drawing scales up unchanged: a single `wᵀ @ x` op, or a whole stack o
 - **Precision control:** run the engine in float64 (stable, default) or
   float32/float16 to study the numerical behaviour of an idea.
 
-## Current status
-
-The project is being built bottom-up. What exists today:
-
-- **Autograd engine** (`bert_cpu/engine.py`) — ✅ complete. The `Tensor` class
-  with reverse-mode `backward()`, broadcasting, elementwise ops, `@` (matmul),
-  activations (`tanh`, `relu`, `gelu`), reductions (`sum`, `mean`, `var`,
-  `max`), `softmax`, indexing, `cat`, plus `set_seed` and precision control.
-- **NN layers** (`bert_cpu/nn.py`) — 🚧 in progress. `Module` (parameter
-  collection, `zero_grad`, `train`/`eval`), `Parameter`, `Linear` (with the bias
-  folded into the weight via the `x_0 = 1` trick), and `xavier_uniform` are
-  implemented. `Embedding`, `LayerNorm`, `Dropout`, `Sequential` are scaffolded.
-- **Visualisations** (`learn/`) — ✅ `viz01_engine` (the autograd engine) and
-  `viz02_nn` (a stack of `Linear` layers and its chain rule).
-- **Higher layers** — ⏳ scaffolded only: attention (`attention.py`), the
-  Transformer encoder (`transformer.py`), optimizers (`optim.py`), losses
-  (`loss.py`) and the tokenizer (`tokenizer.py`) still raise
-  `NotImplementedError`.
-
 ## Requirements
 
 - Python >= 3.8
@@ -117,33 +98,53 @@ pip install -r requirements.txt
 > error, your interpreter is missing the `venv` module. On Debian/Ubuntu install
 > it with `apt install python3-venv`, or use a `pyenv`-managed Python.
 
+### Check the install
+
+```bash
+pytest test/test_engine.py test/test_nn.py     # the parts you will actually use
+```
+
+Everything there should pass. A full `pytest` also runs `test/test_model.py`, which
+**fails on purpose**: attention and the Transformer encoder are the parts of the library
+that are still scaffolding, so their four tests raise `NotImplementedError`. Four failures
+in `test_model.py` mean your install is fine; anything else does not.
+
 ## Learning path (start here)
 
-This project is meant to be *read and run* from the ground up. Everything BERT
-does eventually reduces to one idea: a graph of tensor operations through which
-gradients flow backward. So the very first thing to understand — right after
-installing — is **how the autograd engine works**.
+This project is meant to be *read and run* from the ground up. Everything BERT does
+eventually reduces to one idea: a graph of tensor operations through which gradients flow
+backward. The three packages take you through that idea three times, each time asking more
+of you — and a practical course walks them in this order:
 
-**Step 1 — see the gradient engine in action.** The didactic visualisations live
-in the `learn/` package and are meant to be run directly (use `-m` from the
-project root so `bert_cpu` is importable — running the path directly is not).
+| package | what you do there | how long |
+|---|---|---|
+| **`learn/`** | **Watch.** Terminal walkthroughs that draw the computational graph and animate the backward pass, node by node | one sitting |
+| **`exercises/`** | **Write.** Six notebooks: a new op and its derivative, layers built from engine ops, then two models actually trained on real data | q01–q04 an afternoon each; q05–q06 one session |
+| **`research/`** | **Investigate.** Pick one of fifteen open questions and measure whether an idea from the literature buys accuracy for its FLOPs | 2–5 days |
+
+Nothing here needs a GPU, an account, or a download: the whole path runs on the laptop you
+installed it on.
+
+### Step 1 — watch the gradient engine
+
+The didactic visualisations live in the `learn/` package and are run as modules from the
+project root (use `-m` so `bert_cpu` is importable — running the file by path is not).
 With the virtual environment activated:
 
 ```bash
 python -m learn.viz01_engine
 ```
 
-This standalone run also lets you choose the numerical precision and the RNG
-seed, so you can watch the same walkthrough under different settings and get
-reproducible numbers:
+This standalone run also lets you choose the numerical precision and the RNG seed, so you
+can watch the same walkthrough under different settings and get reproducible numbers:
 
 ```bash
 python -m learn.viz01_engine --precision float32 --seed 0
 python -m learn.viz01_engine --precision float16 --seed 42
 ```
 
-- `--precision` picks the engine's float dtype (`float16` / `float32` /
-  `float64`; default `float64`).
+- `--precision` picks the engine's float dtype (`float16` / `float32` / `float64`;
+  default `float64`).
 - `--seed` seeds NumPy's RNG so the run is reproducible (omit for a random run).
 
 What you will see, and what to take away from it:
@@ -166,8 +167,9 @@ Read the graph from the top down to follow the forward pass, then read the
 gradients to see how `backward()` distributes the chain rule from the output
 back to every input.
 
-**Step 2 — see a layer, and how stacking layers chains derivatives.** Once the
-engine clicks, move up one level to the `nn` layers:
+### Step 2 — watch a layer, and how stacking layers chains derivatives
+
+Once the engine clicks, move up one level to the `nn` layers:
 
 ```bash
 python -m learn.viz02_nn --seed 5      # seed 5 keeps every ReLU unit lively
@@ -180,21 +182,47 @@ derivatives**, propagated layer by layer and multiplied at each step by the
 activation slope `act'(z)` and the weight matrix. The rest of the library
 (attention, the full encoder) is just *bigger graphs of the same kind*.
 
-**Step 3 — confirm everything is correct.** Run the software tests
-(broadcasting, matmul, softmax, finite-difference gradient checks, the layers,
-and the cross-layer chain rule):
+### Step 3 — write the pieces yourself
+
+Now stop watching. The first four notebooks in `exercises/` hand you a blank `forward` (or,
+in Exercise 01, a blank `_backward`) and a grading cell that checks your gradients against
+finite differences:
 
 ```bash
-pytest
+pip install jupyterlab matplotlib     # not runtime dependencies; only the exercises need them
+jupyter lab                           # then open exercises/q01_activations.ipynb
 ```
 
-**Step 4 — write some of it yourself.** The graded exercises in `exercises/` are
-Jupyter notebooks: you implement an op's backward rule, then whole layers, and each
-notebook checks your gradients against finite differences — see
+- **q01** — add `sigmoid`, `swish` and `softplus` to the engine as new ops, writing the
+  local derivative by hand. This is the only exercise where you write a backward pass.
+- **q02–q04** — build layers by *composing* ops the engine already differentiates (the star
+  operation, the GLU family, learned mixtures of activations), and watch the engine produce
+  their gradients for free.
+
+A PASS means your analytic gradient matched a numerical one to about `1e-9`. Unfinished
+pieces report `SKIPPED`, so a half-done notebook still grades the parts you did. Details in
 [Exercises (Jupyter notebooks)](#exercises-jupyter-notebooks).
 
-From here you are ready to explore the higher-level modules. The full testing
-reference is in [Tests and didactic walkthroughs](#tests-and-didactic-walkthroughs).
+### Step 4 — train something real
+
+The last two notebooks are complete — nothing to fill in — because their job is to show the
+whole pipeline at once, with the maths beside the code:
+
+- **q05** — an MLP that classifies UCI Adult income: softmax, cross entropy, Adam, a
+  train/validation split, and the FLOPs it all cost. This is the first time the pieces
+  become a model that learns (~8 s to run).
+- **q06** — word2vec on the *Flatland* corpus: embeddings learned from raw text with no
+  labels at all, scored before and after training (~1.5 min).
+
+### Step 5 — investigate
+
+Finally, `research/01_research_questions.ipynb` turns the engine into an instrument. Fifteen
+open questions, each with the papers to read first; you pick **one** and spend two to five
+days answering it experimentally, measuring **accuracy per FLOP** against the q05/q06
+baselines. See [Research project](#research-project-pick-one-question).
+
+The full testing reference is in
+[Tests and didactic walkthroughs](#tests-and-didactic-walkthroughs).
 
 ## Usage
 
@@ -235,13 +263,16 @@ y.sum().backward()                     # gradients flow into layer.weight
 print(layer.weight.grad)               # dL/dW (bias row included)
 ```
 
-> The higher-level pieces (`BERTModel`, `MultiHeadAttention`, optimizers, losses,
-> tokenizer) are scaffolded but not implemented yet — see
-> [Current status](#current-status) above.
+> Optimizers (`optim.SGD`, `optim.Adam`), the loss (`loss.cross_entropy`) and the
+> WordPiece `tokenizer` are implemented — Exercises 05 and 06 train with them. What is
+> still scaffolding: `MultiHeadAttention`, the Transformer encoder and `BERTModel`, plus
+> `nn.LayerNorm`, `nn.Dropout` and `nn.Sequential`. Their tests fail on purpose, and
+> filling some of those stubs in is exactly what a couple of the research questions ask
+> of you.
 
 ## Exercises (Jupyter notebooks)
 
-The `exercises/` folder is where you stop reading and start writing. The four graded
+The `exercises/` folder is where you stop reading and start writing. The six
 exercises are **Jupyter notebooks**: the theory is rendered next to the code, you fill in
 the blanks, and the cell below grades what you wrote by comparing the engine's gradients
 with finite differences.
@@ -271,7 +302,7 @@ Then open `exercises/q01_activations.ipynb`. Opening the `.ipynb` files directly
 the project root on `sys.path`, so `import bert_cpu` resolves whether the kernel starts in
 the project root or inside `exercises/`.
 
-### The four exercises, in order
+### The six exercises, in order
 
 | # | Notebook | What you build |
 |---|---|---|
@@ -279,16 +310,27 @@ the project root or inside `exercises/`.
 | 02 | `q02_rewrite_the_stars.ipynb` | The **star operation** (`act(u) * v`) as `nn.Module` layers — composed ops, so autograd writes the backward for you |
 | 03 | `q03_gated_linear_units.ipynb` | The **GLU family** (GLU, GTU, bilinear, GEGLU, SwiGLU) |
 | 04 | `q04_learnable_activations.ipynb` | A **learned mix** of ReLU/GELU/SiLU, with trainable coefficients |
+| 05 | `q05_binary_classification.ipynb` | The first **trained** network: an MLP that classifies UCI Adult income (~8 s to run) |
+| 06 | `q06_learn_embedding.ipynb` | **word2vec** on *Flatland* — skip-gram with negative sampling (~1.5 min to run) |
 
 Work through them in that order — they build on each other. Exercise 03 asks you to bring
 the `swish` you wrote in Exercise 01 over into one cell, so a passing SwiGLU check
 validates both notebooks at once.
 
+**01–04 are fill-in exercises**: you write a `forward` (or, in 01, a `_backward`) and a
+grading cell checks it against finite differences. **05 and 06 are complete** — nothing to
+fill in. They are where the pieces become a network that actually trains on real data, so
+they read as guided walkthroughs: the maths next to the code, in the notation of the
+*Neural Networks* lecture notes, with each section naming the part of the notes it puts to
+work.
+
 ### How a notebook works
 
 1. Run the **setup** cell at the top (imports and the `sys.path` bootstrap).
-2. Fill in each cell marked `# TODO:` — remove its `raise NotImplementedError` and write
-   the forward pass. Everything under a **GIVEN** heading is the harness; leave it alone.
+2. In 01–04, fill in each cell marked `# TODO:` — remove its `raise NotImplementedError`
+   and write the forward pass. Everything under a **GIVEN** heading is the harness; leave
+   it alone. In 05–06 there is nothing to fill in: read a section, run its cell, and check
+   the claim it makes.
 3. Run the **grading** cell. It prints, per tensor,
    `max|analytic - numeric|` — the difference between the gradient `backward()` produced
    and the same gradient recomputed by central finite differences. Anything around `1e-9`
@@ -300,15 +342,66 @@ The checker itself lives in [`exercises/grading.py`](exercises/grading.py) — p
 readable code that knows nothing about the engine internals, which is exactly why its
 agreement is evidence.
 
-### The capstones stay scripts
+### The two trained exercises
 
-Two files in the same folder are **not** fill-in exercises but complete, runnable training
-baselines — read them, then run them from the project root:
+Exercises 05 and 06 are the ones that leave the toy setting: they load real data and run a
+real training loop, so they cost more than a keystroke to run (~8 s and ~1.5 min
+respectively, on CPU, in pure NumPy). Both are self-contained notebooks — run the cells top
+to bottom.
+
+- `q05_binary_classification.ipynb` — a `Linear -> ReLU -> Linear` classifier on **UCI
+  Adult**, trained full-batch with Adam and softmax cross entropy. It is the first place the
+  whole pipeline appears at once, and it checks its own claims: the softmax + cross-entropy
+  gradient is verified against the formula, and the training/validation curves are plotted
+  (needs `matplotlib`).
+- `q06_learn_embedding.ipynb` — **word2vec** (skip-gram with negative sampling) over the
+  *Flatland* corpus, learning an embedding table from raw text with no labels. It scores
+  itself with a silhouette report over three word groups, printed before and after training.
+
+## Research project (pick one question)
+
+Once the exercises are done, `research/` turns the engine into an instrument. It holds
+**fifteen open research questions** — the student picks **one** and spends two to five days
+answering it experimentally, against the code this repository already contains.
 
 ```bash
-python -m exercises.task_binary_classification   # UCI Adult: Linear + Adam + cross-entropy
-python -m exercises.task_learn_embedding         # word2vec (skip-gram + negative sampling)
+jupyter lab                                  # then open:
+research/01_research_questions.ipynb
 ```
+
+They share one axis, the one the engine can measure about itself: **accuracy per FLOP**.
+`bert_cpu/engine.py` counts the arithmetic it executes (`reset_flops()` / `flop_count()`),
+so every question is a trade-off — *does this idea buy accuracy for its compute?* — rather
+than the unanswerable *does this idea help?*. The themes span cheaper layers (low-rank,
+ternary weights, sparsity, conditional compute), activations and gating (extending q02–q04),
+losses and regularisation (focal and poly losses, R-Drop, mixup), optimisation (Lion, Muon,
+equal-budget comparisons), and representation learning (distillation, data pruning,
+contrastive pretraining, embedding-table shape). Each question comes with two to four
+papers to read first, what to implement, the protocol to follow, and what two versus five
+days of work looks like.
+
+The notebook also carries the **experimental protocol** the answers share (three seeds
+minimum, mean ± standard deviation, never a claim inside the error bars, FLOPs reported
+beside every score), the **report template**, and the **grading rubric**.
+
+`research/benchmark.py` is the measuring device:
+
+```python
+from research.benchmark import run_adult, baseline_mlp, repeat, summarize
+
+def my_variant(n_features):        # ← your idea goes here: any nn.Module
+    return baseline_mlp(n_features)
+
+rows  = repeat(lambda s: run_adult(baseline_mlp, seed=s, name="baseline"))
+rows += repeat(lambda s: run_adult(my_variant, seed=s, name="my variant"))
+print(summarize(rows, baseline="baseline"))   # mean ± std, FLOPs, and the delta
+```
+
+It runs the q05 loop (or the q06 one, via `run_sgns`) and returns the score *with* its
+training and inference FLOPs, so fifteen students answering fifteen different questions
+produce tables that can be read side by side. It is checked against the notebooks it
+mirrors: `run_adult(baseline_mlp, seed=0)` reproduces q05's 0.8543 test accuracy and its
+84,227,782,200 training FLOPs exactly.
 
 ## Tests and didactic walkthroughs
 
@@ -331,11 +424,16 @@ pip install pytest
 ### Run the software tests
 
 ```bash
-pytest                       # run every software test
-pytest -v                    # verbose, one line per test
-pytest test/test_engine.py   # just the autograd-engine tests
-pytest test/test_nn.py       # just the nn-layer tests
+pytest test/test_engine.py test/test_nn.py   # the parts that are built — all pass
+pytest                                       # everything, including the scaffolding
+pytest -v                                    # verbose, one line per test
+pytest test/test_viz.py                      # smoke-check the learn/ walkthroughs
 ```
+
+A bare `pytest` reports **four failures in `test/test_model.py`**, and that is the correct
+result today: `MultiHeadAttention`, the encoder layer and `BERTModel` are still stubs that
+raise `NotImplementedError`, and those tests are waiting for them. Anything failing outside
+`test_model.py` is a real problem.
 
 ### Run the didactic walkthroughs
 
